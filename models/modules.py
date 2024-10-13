@@ -83,7 +83,7 @@ class Block(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableLayer):
             proj_drop=drop,
         )
         self.drop_path = (
-            DropPath(drop_path) if drop_path > 0.0 else tf.keras.layers.Layer()
+            DropPath(drop_path) if drop_path > 0.0 else tf.keras.layers.Lambda(tf.identity)
         )
         self.norm2 = tf.keras.layers.LayerNormalization(epsilon=1e-05)
         mlp_hidden_dim = int(dim * mlp_ratio)
