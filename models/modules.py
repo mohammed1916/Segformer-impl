@@ -59,7 +59,12 @@ class Mlp(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableLayer):
     def get_prunable_weights(self):
         return [self.fc1.kernel] + self.dwconv.get_prunable_weights() + [self.fc2.kernel]
 
-
+class NoOpLayer(tf.keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super(NoOpLayer, self).__init__(**kwargs)
+    
+    def call(self, inputs):
+        return inputs
 class Block(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableLayer):
     def __init__(
         self,
@@ -83,7 +88,7 @@ class Block(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableLayer):
             proj_drop=drop,
         )
         self.drop_path = (
-            DropPath(drop_path) if drop_path > 0.0 else tf.keras.layers.Lambda(tf.identity)
+            DropPath(drop_path) if drop_path > 0.0 else NoOpLayer()
         )
         self.norm2 = tf.keras.layers.LayerNormalization(epsilon=1e-05)
         mlp_hidden_dim = int(dim * mlp_ratio)
