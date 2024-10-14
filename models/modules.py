@@ -1,14 +1,13 @@
-import tensorflow as tf
-import tensorflow_model_optimization as tfmot
+import keras
+from keras import ops
 from .Attention import Attention
 from .utils import DropPath
 
 
-
-class DWConv(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableLayer):
+class DWConv(keras.layers.Layer):
     def __init__(self, filters=768, **kwargs):
         super().__init__(**kwargs)
-        self.dwconv = tf.keras.layers.Conv2D(
+        self.dwconv = keras.layers.Conv2D(
             filters=filters,
             kernel_size=3,
             strides=1,
@@ -17,20 +16,17 @@ class DWConv(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableLayer):
         )
 
     def call(self, x, H, W):
-        get_shape_1 = tf.shape(x)
-        x = tf.reshape(x, (get_shape_1[0], H, W, get_shape_1[-1]))
+        get_shape_1 = ops.shape(x)
+        x = ops.reshape(x, (get_shape_1[0], H, W, get_shape_1[-1]))
         x = self.dwconv(x)
-        get_shape_2 = tf.shape(x)
-        x = tf.reshape(
+        get_shape_2 = ops.shape(x)
+        x = ops.reshape(
             x, (get_shape_2[0], get_shape_2[1] * get_shape_2[2], get_shape_2[3])
         )
         return x
-    
-    def get_prunable_weights(self):
-        return[self.dwconv.kernel]
 
 
-class Mlp(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableLayer):
+class Mlp(keras.layers.Layer):
     def __init__(
         self,
         in_features,
@@ -41,31 +37,23 @@ class Mlp(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableLayer):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
-        self.fc1 = tf.keras.layers.Dense(hidden_features)
+        self.fc1 = keras.layers.Dense(hidden_features)
         self.dwconv = DWConv(hidden_features)
-        self.act = tf.keras.layers.Activation("gelu")
-        self.fc2 = tf.keras.layers.Dense(out_features)
-        self.drop = tf.keras.layers.Dropout(drop)
+        self.act = keras.layers.Activation("gelu")
+        self.fc2 = keras.layers.Dense(out_features)
+        self.drop = keras.layers.Dropout(drop)
 
     def call(self, x, H, W):
         x = self.fc1(x)
-        x = self.dwconv(x, H, W)
+        x = self.dwconv(x, H=H, W=W)
         x = self.act(x)
         x = self.drop(x)
         x = self.fc2(x)
         x = self.drop(x)
         return x
-    
-    def get_prunable_weights(self):
-        return [self.fc1.kernel] + self.dwconv.get_prunable_weights() + [self.fc2.kernel]
 
-class NoOpLayer(tf.keras.layers.Layer):
-    def __init__(self, **kwargs):
-        super(NoOpLayer, self).__init__(**kwargs)
-    
-    def call(self, inputs):
-        return inputs
-class Block(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableLayer):
+
+class Block(keras.layers.Layer):
     def __init__(
         self,
         dim,
@@ -78,7 +66,7 @@ class Block(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableLayer):
         sr_ratio=1,
     ):
         super().__init__()
-        self.norm1 = tf.keras.layers.LayerNormalization(epsilon=1e-05)
+        self.norm1 = keras.layers.LayerNormalization(epsilon=1e-05)
         self.attn = Attention(
             dim,
             num_heads,
@@ -87,10 +75,8 @@ class Block(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableLayer):
             attn_drop=attn_drop,
             proj_drop=drop,
         )
-        self.drop_path = (
-            DropPath(drop_path) if drop_path > 0.0 else NoOpLayer()
-        )
-        self.norm2 = tf.keras.layers.LayerNormalization(epsilon=1e-05)
+        self.drop_path = DropPath(drop_path)
+        self.norm2 = keras.layers.LayerNormalization(epsilon=1e-05)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(
             in_features=dim,
@@ -99,45 +85,49 @@ class Block(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableLayer):
         )
 
     def call(self, x, H, W):
-        x = x + self.drop_path(self.attn(self.norm1(x), H, W))
-        x = x + self.drop_path(self.mlp(self.norm2(x), H, W))
+        # Apply LayerNormalization and Attention layer
+        attn_output_norm = self.norm1(x)
+        attn_output = self.attn(attn_output_norm, H=H, W=W)
+        attn_output_with_drop = self.drop_path(attn_output)
+        x = x + attn_output_with_drop
+
+        # Apply LayerNormalization and MLP layer
+        mlp_output_norm = self.norm2(x)
+        mlp_output = self.mlp(mlp_output_norm, H=H, W=W)
+        mlp_output_with_drop = self.drop_path(mlp_output)
+        x = x + mlp_output_with_drop
+
         return x
-    
-    def get_prunable_weights(self):
-        
-        return self.mlp.get_prunable_weights()
 
 
-class OverlapPatchEmbed(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableLayer):
+
+class OverlapPatchEmbed(keras.layers.Layer):
     def __init__(
         self, img_size=224, patch_size=7, stride=4, filters=768, **kwargs
     ):
         super().__init__(**kwargs)
-        self.pad = tf.keras.layers.ZeroPadding2D(padding=patch_size // 2)
-        self.conv = tf.keras.layers.Conv2D(
+        self.pad = keras.layers.ZeroPadding2D(padding=patch_size // 2)
+        self.conv = keras.layers.Conv2D(
             filters=filters,
             kernel_size=patch_size,
             strides=stride,
             padding="VALID",
             name='proj',
         )
-        self.norm = tf.keras.layers.LayerNormalization(epsilon=1e-05)
+        self.norm = keras.layers.LayerNormalization(epsilon=1e-05)
 
     def call(self, x):
         x = self.conv(self.pad(x))
-        get_shapes = tf.shape(x)
+        get_shapes = ops.shape(x)
         H = get_shapes[1]
         W = get_shapes[2]
         C = get_shapes[3]
-        x = tf.reshape(x, (-1, H * W, C))
+        x = ops.reshape(x, (-1, H * W, C))
         x = self.norm(x)
         return x, H, W
-    
-    def get_prunable_weights(self):
-        return [self.conv.kernel]
 
 
-class MixVisionTransformer(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableLayer):
+class MixVisionTransformer(keras.layers.Layer):
     def __init__(
         self,
         img_size=224,
@@ -179,7 +169,7 @@ class MixVisionTransformer(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableL
             filters=embed_dims[3],
         )
 
-        dpr = [x for x in tf.linspace(0.0, drop_path_rate, sum(depths))]
+        dpr = [x for x in ops.linspace(0.0, drop_path_rate, sum(depths))]
         cur = 0
         self.block1 = [
             Block(
@@ -194,7 +184,7 @@ class MixVisionTransformer(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableL
             )
             for i in range(depths[0])
         ]
-        self.norm1 = tf.keras.layers.LayerNormalization(epsilon=1e-05)
+        self.norm1 = keras.layers.LayerNormalization(epsilon=1e-05)
 
         cur += depths[0]
         self.block2 = [
@@ -210,7 +200,7 @@ class MixVisionTransformer(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableL
             )
             for i in range(depths[1])
         ]
-        self.norm2 = tf.keras.layers.LayerNormalization(epsilon=1e-05)
+        self.norm2 = keras.layers.LayerNormalization(epsilon=1e-05)
 
         cur += depths[1]
         self.block3 = [
@@ -226,7 +216,7 @@ class MixVisionTransformer(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableL
             )
             for i in range(depths[2])
         ]
-        self.norm3 = tf.keras.layers.LayerNormalization(epsilon=1e-05)
+        self.norm3 = keras.layers.LayerNormalization(epsilon=1e-05)
 
         cur += depths[2]
         self.block4 = [
@@ -242,42 +232,42 @@ class MixVisionTransformer(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableL
             )
             for i in range(depths[3])
         ]
-        self.norm4 = tf.keras.layers.LayerNormalization(epsilon=1e-05)
+        self.norm4 = keras.layers.LayerNormalization(epsilon=1e-05)
 
     def call_features(self, x):
-        B = tf.shape(x)[0]
+        B = ops.shape(x)[0]
         outs = []
 
         # stage 1
         x, H, W = self.patch_embed1(x)
         for i, blk in enumerate(self.block1):
-            x = blk(x, H, W)
+            x = blk(x, H=H, W=W)
         x = self.norm1(x)
-        x = tf.reshape(x, (B, H, W, tf.shape(x)[-1]))
+        x = ops.reshape(x, (B, H, W, ops.shape(x)[-1]))
         outs.append(x)
 
         # stage 2
         x, H, W = self.patch_embed2(x)
         for i, blk in enumerate(self.block2):
-            x = blk(x, H, W)
+            x = blk(x, H=H, W=W)
         x = self.norm2(x)
-        x = tf.reshape(x, (B, H, W, tf.shape(x)[-1]))
+        x = ops.reshape(x, (B, H, W, ops.shape(x)[-1]))
         outs.append(x)
 
         # stage 3
         x, H, W = self.patch_embed3(x)
         for i, blk in enumerate(self.block3):
-            x = blk(x, H, W)
+            x = blk(x, H=H, W=W)
         x = self.norm3(x)
-        x = tf.reshape(x, (B, H, W, tf.shape(x)[-1]))
+        x = ops.reshape(x, (B, H, W, ops.shape(x)[-1]))
         outs.append(x)
 
         # stage 4
         x, H, W = self.patch_embed4(x)
         for i, blk in enumerate(self.block4):
-            x = blk(x, H, W)
+            x = blk(x, H=H, W=W)
         x = self.norm4(x)
-        x = tf.reshape(x, (B, H, W, tf.shape(x)[-1]))
+        x = ops.reshape(x, (B, H, W, ops.shape(x)[-1]))
         outs.append(x)
 
         return outs
@@ -285,21 +275,3 @@ class MixVisionTransformer(tf.keras.layers.Layer, tfmot.sparsity.keras.PrunableL
     def call(self, x):
         x = self.call_features(x)
         return x
-    
-    def get_prunable_weights(self):
-        weights = []
-
-        # Patch embedding layers
-        for patch in [self.patch_embed1, self.patch_embed2, self.patch_embed3, self.patch_embed4]:
-            weights.extend(patch.get_prunable_weights())
-
-        # Blocks and their sub-blocks
-        for block in [self.block1, self.block2, self.block3, self.block4]:
-            for sub_block in block:
-                weights.extend(sub_block.get_prunable_weights())
-
-        return weights
-
-        # w1 = self.patch_embed1.get_prunable_weights()+self.patch_embed2.get_prunable_weights()+self.patch_embed3.get_prunable_weights()+self.patch_embed4.get_prunable_weights()
-        # w2 = self.block1[0].get_prunable_weights()+self.block2[0].get_prunable_weights()+self.block3[0].get_prunable_weights()+self.block4[0].get_prunable_weights()
-
